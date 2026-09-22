@@ -219,13 +219,19 @@ import { generateTripPlanStream, type StreamEvent } from '@/services/api'
 import type { TripFormData } from '@/types'
 import type { Dayjs } from 'dayjs'
 
+// 表单内部保存 Dayjs 对象，提交前再转换为后端需要的字符串日期
+type TripFormState = Omit<TripFormData, 'start_date' | 'end_date'> & {
+  start_date: Dayjs | null
+  end_date: Dayjs | null
+}
+
 const router = useRouter()
 const loading = ref(false)
 const loadingProgress = ref(0)
 const loadingStatus = ref('')
 let abortController: AbortController | null = null
 
-const formData = reactive<TripFormData & { start_date: Dayjs | null; end_date: Dayjs | null }>({
+const formData = reactive<TripFormState>({
   city: '',
   start_date: null,
   end_date: null,

@@ -317,7 +317,7 @@ import AMapLoader from '@amap/amap-jsapi-loader'
 import html2canvas from 'html2canvas'
 import jsPDF from 'jspdf'
 import type { TripPlan } from '@/types'
-import { getTripPlan, updateTripPlan } from '@/services/api'
+import { API_BASE_URL, getTripPlan, updateTripPlan } from '@/services/api'
 
 const router = useRouter()
 const route = useRoute()
@@ -455,7 +455,7 @@ const loadAttractionPhotos = async () => {
 
   // 逐个加载图片，每次间隔 200ms 避免请求风暴
   for (const name of names) {
-    fetch(`http://localhost:8000/api/poi/photo?name=${encodeURIComponent(name)}`)
+    fetch(`${API_BASE_URL}/api/poi/photo?name=${encodeURIComponent(name)}`)
         .then(res => res.json())
         .then(data => {
           if (data.success && data.data.photo_url) {
@@ -463,7 +463,7 @@ const loadAttractionPhotos = async () => {
             attractionPhotos.value[name] = data.data.photo_url
           }
         })
-        .catch(err => {
+        .catch(() => {
           // 静默失败：前端已有渐变色占位图兜底
         })
     await new Promise(resolve => setTimeout(resolve, 200))
@@ -808,49 +808,6 @@ const exportAsPDF = async () => {
   } catch (error: any) {
     console.error('导出PDF失败:', error)
     message.error({ content: `导出PDF失败: ${error.message}`, key: 'export' })
-  }
-}
-
-// 截取地图图片
-const captureMapImage = async () => {
-  if (!map) return
-
-  try {
-    // 获取地图容器
-    const mapContainer = document.getElementById('amap-container')
-    if (!mapContainer) return
-
-    // 使用高德地图的截图功能
-    const mapCanvas = mapContainer.querySelector('canvas')
-    if (mapCanvas) {
-      // 创建一个img元素替换地图容器
-      const img = document.createElement('img')
-      img.src = mapCanvas.toDataURL('image/png')
-      img.style.width = '100%'
-      img.style.height = '500px'
-      img.style.objectFit = 'cover'
-      img.id = 'map-snapshot'
-
-      // 隐藏原地图,显示截图
-      mapContainer.style.display = 'none'
-      mapContainer.parentElement?.appendChild(img)
-    }
-  } catch (error) {
-    console.error('截取地图失败:', error)
-  }
-}
-
-// 恢复地图
-const restoreMap = () => {
-  const mapContainer = document.getElementById('amap-container')
-  const snapshot = document.getElementById('map-snapshot')
-
-  if (mapContainer) {
-    mapContainer.style.display = 'block'
-  }
-
-  if (snapshot) {
-    snapshot.remove()
   }
 }
 
