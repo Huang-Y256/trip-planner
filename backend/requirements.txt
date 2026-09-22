@@ -1,0 +1,24 @@
+# LangGraph + LangChain
+langgraph>=0.2.0,<0.3
+langchain>=0.3.0,<0.4
+langchain-openai>=0.2.0,<0.3
+langchain-core>=0.3.0,<0.4
+langsmith>=0.1.0
+
+# FastAPI
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Logging
+loguru>=0.7.0
+
+# MCP server runtime
+uv>=0.8.0
+
+# Misc
+python-dateutil>=2.8.2
