@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 from typing import Any
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -28,6 +30,9 @@ NODE_MESSAGES = {
     "replanner": "🔄 校验未通过，正在修正...",
     "fallback": "⚠️ 正在生成降级占位计划...",
 }
+
+# SSE 心跳间隔应小于 Railway/反向代理的空闲连接超时时间
+SSE_HEARTBEAT_SECONDS = 15
 
 
 @router.post(
@@ -199,48 +204,79 @@ def plan_trip_stream(request: TripRequest):
     graph = get_trip_planning_graph()
     initial_state = _build_initial_state(request)
 
+    # LangGraph 的节点同步执行期间无法主动产生事件；
+    # 用独立线程运行图，并借助队列让 SSE 生成器定期发送心跳。
+    graph_events: queue.Queue = queue.Queue()
+
+    def run_graph() -> None:
+        """在线程中执行规划图，避免阻塞 SSE 心跳输出。"""
+        try:
+            for graph_event in graph.stream(initial_state):
+                graph_events.put(graph_event)
+        except Exception as exc:
+            graph_events.put(exc)
+        finally:
+            graph_events.put(None)
+
     def event_generator():
         accumulated: dict[str, Any] = {}
         final_plan = None
         final_status = ""
 
-        try:
-            for event in graph.stream(initial_state):
-                node_name = list(event.keys())[0]
-                node_update = event[node_name]
-                accumulated.update(node_update)
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="trip-graph-stream") as executor:
+            executor.submit(run_graph)
 
-                message = NODE_MESSAGES.get(node_name, f"正在执行 {node_name}...")
-                sse_data: dict[str, Any] = {
-                    "node": node_name,
-                    "message": message,
-                    "status": node_update.get("status", ""),
-                    "done": False,
-                }
+            try:
+                while True:
+                    try:
+                        item = graph_events.get(timeout=SSE_HEARTBEAT_SECONDS)
+                    except queue.Empty:
+                        # SSE 注释行不进入前端业务解析，仅用于保持连接活跃
+                        yield ": keep-alive\n\n"
+                        continue
 
-                # 校验通过时，标记为最终结果
-                if node_update.get("status") == "validated" and node_update.get("validated_plan"):
-                    final_plan = node_update["validated_plan"]
-                    final_status = "validated"
+                    if item is None:
+                        break
 
-                # 降级方案也有结果
-                if node_update.get("status") == "fallback" and node_update.get("validated_plan"):
-                    final_plan = node_update["validated_plan"]
-                    final_status = "fallback"
+                    if isinstance(item, Exception):
+                        raise item
 
-                yield f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n"
+                    event = item
+                    node_name = list(event.keys())[0]
+                    node_update = event[node_name]
+                    accumulated.update(node_update)
 
-            # 流结束后发送最终结果
-            if final_plan:
-                status_text = "旅行计划生成成功" if final_status == "validated" else "AI 规划服务暂时不可用，返回降级行程"
-                plan_id = save_plan(final_plan, status=final_status)
-                yield f"data: {json.dumps({'node': 'done', 'message': status_text, 'data': {'trip_plan': final_plan, 'status': final_status, 'plan_id': plan_id}, 'done': True}, ensure_ascii=False)}\n\n"
-            else:
-                yield f"data: {json.dumps({'node': 'error', 'message': '生成失败，请稍后重试', 'done': True}, ensure_ascii=False)}\n\n"
+                    message = NODE_MESSAGES.get(node_name, f"正在执行 {node_name}...")
+                    sse_data: dict[str, Any] = {
+                        "node": node_name,
+                        "message": message,
+                        "status": node_update.get("status", ""),
+                        "done": False,
+                    }
 
-        except Exception:
-            logger.exception("SSE 流式生成异常")
-            yield f"data: {json.dumps({'node': 'error', 'message': '服务暂时不可用，请稍后重试', 'done': True}, ensure_ascii=False)}\n\n"
+                    # 校验通过时，标记为最终结果
+                    if node_update.get("status") == "validated" and node_update.get("validated_plan"):
+                        final_plan = node_update["validated_plan"]
+                        final_status = "validated"
+
+                    # 降级方案也有结果
+                    if node_update.get("status") == "fallback" and node_update.get("validated_plan"):
+                        final_plan = node_update["validated_plan"]
+                        final_status = "fallback"
+
+                    yield f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n"
+
+                # 流结束后发送最终结果
+                if final_plan:
+                    status_text = "旅行计划生成成功" if final_status == "validated" else "AI 规划服务暂时不可用，返回降级行程"
+                    plan_id = save_plan(final_plan, status=final_status)
+                    yield f"data: {json.dumps({'node': 'done', 'message': status_text, 'data': {'trip_plan': final_plan, 'status': final_status, 'plan_id': plan_id}, 'done': True}, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"data: {json.dumps({'node': 'error', 'message': '生成失败，请稍后重试', 'done': True}, ensure_ascii=False)}\n\n"
+
+            except Exception:
+                logger.exception("SSE 流式生成异常")
+                yield f"data: {json.dumps({'node': 'error', 'message': '服务暂时不可用，请稍后重试', 'done': True}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_generator(),
