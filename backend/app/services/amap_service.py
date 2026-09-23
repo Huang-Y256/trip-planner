@@ -1,4 +1,4 @@
-"""高德地图 MCP 服务封装（无 HelloAgents 依赖）。"""
+"""高德地图 MCP 服务封装。"""
 
 from __future__ import annotations
 
